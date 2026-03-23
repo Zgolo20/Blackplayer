@@ -63,6 +63,7 @@ body {
     calc(var(--sb) + 14px)
     calc(var(--sl) + 18px);
   overflow: hidden;
+  justify-content: space-between;
 }
 
 /* Header */
@@ -90,8 +91,8 @@ body {
 .more-btn { background: none; border: none; cursor: pointer; display: flex; align-items: center; gap: 3px; padding: 4px; }
 .more-btn span { width: 4px; height: 4px; border-radius: 50%; background: var(--muted); }
 
-/* Art — grows to fill space */
-.art-container { position: relative; flex: 1 1 0; min-height: 0; margin-bottom: 10px; }
+/* Art — capped height so controls always have room */
+.art-container { position: relative; flex: 0 0 auto; height: min(42vh, 340px); margin-bottom: 10px; }
 .art-glow {
   position: absolute; inset: 8%; border-radius: 16px;
   background: var(--accent); filter: blur(32px); opacity: 0.28;
@@ -443,14 +444,24 @@ input[type=range].eq-slider::-moz-range-thumb {
         Queue
       </button>
 
-      <label class="load-label" for="fileInput">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-          <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
-        </svg>
-        Add Music
-      </label>
-      <input type="file" id="fileInput" accept="audio/*" multiple>
+      <div style="display:flex;gap:5px;align-items:center;">
+        <label class="load-label" for="fileInput" style="padding:7px 10px;">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          Add
+        </label>
+        <input type="file" id="fileInput" accept="audio/*" multiple>
+        <button class="load-label" id="syncFolderBtn" style="padding:7px 10px;cursor:pointer;border:none;">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"/>
+            <polyline points="1 20 1 14 7 14"/>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+          </svg>
+          Sync
+        </button>
+      </div>
 
       <button class="bottom-btn" id="eqBtn">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -593,7 +604,7 @@ function drawArt() {
     artCtx.strokeStyle='rgba(255,255,255,0.05)'; artCtx.lineWidth=2; artCtx.stroke();
   }
   artCtx.fillStyle='rgba(255,255,255,0.88)';
-  artCtx.font=`bold ${Math.floor(Math.min(W,H)*0.18)}px -apple-system`;
+  artCtx.font=`bold ${Math.floor(Math.min(W,H)*0.10)}px -apple-system`;
   artCtx.textAlign='center'; artCtx.textBaseline='middle';
   artCtx.fillText(playing?'♫':'♪',0,0);
   artCtx.restore();
@@ -886,6 +897,64 @@ function showToast(msg) {
   const el=document.getElementById('toast');
   el.textContent=msg; el.classList.add('show');
   clearTimeout(_tt); _tt=setTimeout(()=>el.classList.remove('show'),2200);
+}
+
+
+// ── Auto-sync folder (File System Access API) ─────────────
+let syncDirHandle = null;
+let syncInterval  = null;
+const AUDIO_EXTS  = ['mp3','mp4','m4a','ogg','opus','flac','wav','aac','webm','wma'];
+
+document.getElementById('syncFolderBtn').addEventListener('click', async () => {
+  if (!('showDirectoryPicker' in window)) {
+    showToast('Folder sync not supported in this browser');
+    return;
+  }
+  try {
+    syncDirHandle = await window.showDirectoryPicker({ mode: 'read' });
+    showToast('Syncing folder…');
+    await syncFolder();
+    // Re-scan every 30 seconds for new files
+    clearInterval(syncInterval);
+    syncInterval = setInterval(syncFolder, 30000);
+    document.getElementById('syncFolderBtn').style.color = 'var(--accent2)';
+  } catch (e) {
+    if (e.name !== 'AbortError') showToast('Could not open folder');
+  }
+});
+
+async function syncFolder() {
+  if (!syncDirHandle) return;
+  const newTracks = [];
+  try {
+    for await (const [name, handle] of syncDirHandle.entries()) {
+      if (handle.kind !== 'file') continue;
+      const ext = name.split('.').pop().toLowerCase();
+      if (!AUDIO_EXTS.includes(ext)) continue;
+      // Skip if already loaded
+      const title = name.replace(/\.[^\.]+$/, '');
+      if (tracks.some(t => t.title === title)) continue;
+      const file = await handle.getFile();
+      newTracks.push({
+        url:      URL.createObjectURL(file),
+        title:    title,
+        artist:   'Local File',
+        duration: '—'
+      });
+    }
+  } catch (e) {
+    showToast('Sync error — folder may have moved');
+    clearInterval(syncInterval);
+    return;
+  }
+
+  if (newTracks.length === 0) return;
+
+  const wasEmpty = !tracks.length;
+  tracks = [...tracks, ...newTracks];
+  if (wasEmpty) loadTrack(0);
+  renderQueue();
+  showToast(`${newTracks.length} new track${newTracks.length > 1 ? 's' : ''} synced`);
 }
 
 function fmt(s) { if(!isFinite(s))return'0:00'; return Math.floor(s/60)+':'+String(Math.floor(s%60)).padStart(2,'0'); }
